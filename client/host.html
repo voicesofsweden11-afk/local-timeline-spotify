@@ -1,0 +1,132 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Host</title>
+
+<button id="login">Login with Spotify</button>
+<button id="declareHost">Declare Host</button>
+<button id="start">Start Round</button>
+
+<!-- Debug helpers -->
+<button id="dbgTransfer">Transfer to This Device</button>
+<button id="dbgPlay">Test Play (Mr. Brightside)</button>
+
+<!-- Quick search to verify URIs -->
+<h3>Search Spotify (SE market)</h3>
+<input id="q" placeholder="e.g., billie jean michael jackson" size="40">
+<button id="search">Search</button>
+<div id="results"></div>
+
+<!-- Import playlist -->
+<h3>Import playlist</h3>
+<input id="pl" size="50" placeholder="Paste Spotify playlist URL or spotify:playlist:...">
+<button id="btnImport">Import</button>
+<div id="impStatus"></div>
+
+<pre id="log"></pre>
+
+<script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+<script>
+const roomCode = 'ABCD';
+const s = io();
+
+login.onclick = () => {
+  location.href = `/auth/login?room=${roomCode}`;
+};
+
+let player;
+function initPlayer(getToken) {
+  window.onSpotifyWebPlaybackSDKReady = () => {
+    player = new Spotify.Player({
+      name: 'Local Timeline Host',
+      getOAuthToken: cb => getToken().then(t => cb(t))
+    });
+
+    player.addListener('ready', ({ device_id }) => {
+      log.textContent += `\nWeb Playback device: ${device_id}`;
+      s.emit('setHostDevice', { roomCode, deviceId: device_id });
+    });
+    player.addListener('initialization_error', e => log.textContent += `\nInit error: ${e.message}`);
+    player.addListener('authentication_error', e => log.textContent += `\nAuth error: ${e.message}`);
+    player.addListener('account_error', e => log.textContent += `\nAccount error: ${e.message}`);
+    player.addListener('playback_error', e => log.textContent += `\nPlayback error: ${e.message}`);
+
+    player.connect();
+  };
+
+  const sEl = document.createElement('script');
+  sEl.src = 'https://sdk.scdn.co/spotify-player.js';
+  document.body.appendChild(sEl);
+}
+
+async function fetchHostToken(){
+  const res = await fetch(`/auth/host-token?room=${roomCode}`);
+  const data = await res.json();
+  if (!res.ok) throw new Error(data.error || 'no token');
+  return data.accessToken;
+}
+
+// Wake audio context on user gesture + declare host on server
+declareHost.onclick = () => {
+  s.emit('declareHost', { roomCode });
+  if (player?.activateElement) player.activateElement();
+};
+
+start.onclick = () => s.emit('startRound', { roomCode });
+
+// Debug: transfer to this web device (no autoplay)
+dbgTransfer.onclick = async () => {
+  const r = await fetch(`/debug/transfer?room=${roomCode}`, { method: 'POST' });
+  log.textContent += `\nTransfer status: ${r.status}`;
+};
+
+// Debug: play a known-good track immediately
+dbgPlay.onclick = async () => {
+  const r = await fetch(`/debug/play?room=${roomCode}&uri=spotify:track:0eGsygTp906u18L0Oimnem`, { method: 'POST' });
+  log.textContent += `\nPlay status: ${r.status}`;
+};
+
+// Search Spotify to verify real URIs (market=SE)
+search.onclick = async () => {
+  const query = document.getElementById('q').value.trim();
+  const r = await fetch(`/debug/search?room=${roomCode}&q=${encodeURIComponent(query)}&market=SE`);
+  const data = await r.json();
+  results.innerHTML = '';
+  if (!data.items || !data.items.length) {
+    results.textContent = 'No results';
+    return;
+  }
+  data.items.forEach(item => {
+    const row = document.createElement('div');
+    row.style.margin = '6px 0';
+    const txt = document.createElement('span');
+    txt.textContent = `${item.name} — ${item.artists} (${item.year})  [${item.uri}] `;
+    const btn = document.createElement('button');
+    btn.textContent = 'Play this';
+    btn.onclick = async () => {
+      await fetch(`/debug/transfer?room=${roomCode}`, { method: 'POST' });
+      const r2 = await fetch(`/debug/play?room=${roomCode}&uri=${encodeURIComponent(item.uri)}`, { method: 'POST' });
+      log.textContent += `\nSearch Play status: ${r2.status}`;
+    };
+    row.appendChild(txt);
+    row.appendChild(btn);
+    results.appendChild(row);
+  });
+};
+
+// Import playlist into the deck
+btnImport.onclick = async () => {
+  const url = pl.value.trim();
+  const r = await fetch('/import/playlist', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ room: roomCode, market: 'SE', url })
+  });
+  const data = await r.json();
+  impStatus.textContent = r.ok
+    ? `Imported ${data.count} tracks. (Start Round will use them.)`
+    : `Import failed: ${data.error || r.status}`;
+};
+
+// initialize player after login returns (or immediately if already logged in)
+initPlayer(fetchHostToken);
+</script>

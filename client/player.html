@@ -1,0 +1,107 @@
+<!doctype html>
+<meta charset="utf-8" />
+<title>Player</title>
+
+<h2>Join</h2>
+<input id="name" placeholder="Your name"/>
+<button id="join">Join</button>
+
+<h2>Your Turn</h2>
+<div id="yourTimeline"></div>
+<div>
+  <label>Title guess <input id="gTitle"></label>
+  <label>Artist guess <input id="gArtist"></label>
+  <button id="lock" disabled>Lock Placement</button>
+</div>
+
+<h2>Interject on Player 1</h2>
+<div id="p1Gaps"></div>
+
+<h2>Game State</h2>
+<pre id="state"></pre>
+
+<script src="https://cdn.socket.io/4.7.2/socket.io.min.js"></script>
+<script>
+const roomCode = 'ABCD';
+const s = io();
+let me = null;            // my socket id (server echoes it in state? we’ll detect from state)
+let mySelectedGap = null; // for my own turn
+
+// --- join
+join.onclick = () => s.emit('joinGame', { roomCode, name: name.value || 'Anon' });
+
+// --- render helpers
+function renderYourTimeline(st) {
+  // Find my player entry (best effort)
+  const myEntry = Object.entries(st.players).find(([id,p]) => p.name === (name.value || 'Anon'));
+  if (!myEntry) { yourTimeline.textContent = 'Join to see timeline'; return; }
+  const [myId, meP] = myEntry; me = myId;
+
+  const years = meP.timeline.map(t => t.year);
+  const labels = years.map(y => String(y));
+  // Build N+1 gap buttons
+  yourTimeline.innerHTML = '';
+  const frag = document.createDocumentFragment();
+  const makeGapBtn = (i, label) => {
+    const b = document.createElement('button');
+    b.textContent = label;
+    b.onclick = () => {
+      mySelectedGap = i;
+      [...yourTimeline.querySelectorAll('button')].forEach(x => x.disabled = false);
+      b.disabled = true; // indicate selected
+      lock.disabled = false;
+    };
+    return b;
+  };
+  frag.appendChild(makeGapBtn(0, '⬇️  place before first'));
+  labels.forEach((lab, idx) => {
+    const span = document.createElement('span');
+    span.textContent = `  [${lab}]  `;
+    frag.appendChild(span);
+    frag.appendChild(makeGapBtn(idx+1, '⬇️  place after'));
+  });
+  yourTimeline.appendChild(frag);
+}
+
+function renderP1Gaps(payload) {
+  const { gaps, taken } = payload;
+  p1Gaps.innerHTML = '';
+  gaps.forEach(g => {
+    const b = document.createElement('button');
+    const left = g.left ? g.left : '⟵ start';
+    const right = g.right ? g.right : 'end ⟶';
+    b.textContent = `Reserve gap ${g.i}: ${left}  |  ${right}`;
+    if (taken && taken[g.i]) { b.disabled = true; b.textContent += ' (taken)'; }
+    b.onclick = () => s.emit('reserveGap', { roomCode, gapIndex: g.i });
+    p1Gaps.appendChild(b);
+    p1Gaps.appendChild(document.createElement('br'));
+  });
+}
+
+// --- events
+s.on('state', (st) => {
+  state.textContent = JSON.stringify(st, null, 2);
+  renderYourTimeline(st);
+});
+
+s.on('interjectionWindowOpen', (payload) => {
+  renderP1Gaps(payload);
+});
+
+s.on('gapReservationUpdate', ({ gapIndex, by }) => {
+  // simple re-fetch state to re-render taken flags if needed
+  // (or keep payload.taken around; keeping it simple)
+});
+
+lock.onclick = () => {
+  if (mySelectedGap == null) { alert('Pick a gap on your timeline first'); return; }
+  s.emit('hostLockedPlacement', {
+    roomCode,
+    insertIndex: mySelectedGap,
+    titleGuess: gTitle.value,
+    artistGuess: gArtist.value
+  });
+  lock.disabled = true;
+  mySelectedGap = null;
+};
+</script>
